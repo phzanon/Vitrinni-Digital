@@ -14,7 +14,7 @@ public class AddressService {
     private final GeolocationService geolocationService;
 
     public Address create(AddressDto dto) {
-        final var geoloc = this.geolocationService.getGeoloc(dto.logradouro() + dto.numero() + dto.cidade() + dto.cep(), "AIzaSyDrWNvYF5ZeWJ2a6W8wYWrmTQx_SyncexU");
+        final var geoloc = this.geolocationService.getGeoloc(dto.logradouro() + dto.numero() + dto.cidade() + dto.cep(), "");
 
         return repository.save(Address
                 .builder()
