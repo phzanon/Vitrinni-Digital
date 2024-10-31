@@ -1,0 +1,465 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+#################
+#   Parameters  #
+#################
+Parameters:
+  ContainerName:
+    Description: Container Name
+    Type: String
+    Default: tcc-app
+  FeatureName:
+    Description: Nome da feature
+    Type: String
+    Default: springboot
+  MicroServiceName:
+    Description: Nome do micro servico
+    Type: String
+    Default: tccapi
+  ## Config ECS ##
+  EcsClusterName:
+    Description: Name of the ECS Cluster
+    Type: String
+    Default: 'tcc-cluster'
+  ContainerCpu:
+    Description: The number of cpu units reserved for the container.
+    Type: Number
+    Default: 256
+  ContainerMemory:
+    Description: The amount (in MiB) of memory to present to the container.
+    Type: Number
+    Default: 512
+  ContainerMemoryReservation:
+    Description: The soft limit (in MiB) of memory to reserve for the container.
+    Type: Number
+    Default: 512
+  ListenerContainerPort:
+    Description: Listening port for container
+    Type: Number
+    Default: 80
+  ## Config VPC ##
+  VPCID:
+    Description: ID da VPC
+    Type:  AWS::EC2::VPC::Id
+    Default: 'vpc-077e25bfbd21b664b'
+  PrivateSubnets:
+    Type:  List<AWS::EC2::Subnet::Id>
+    Description: List of private subnets
+    Default: 'subnet-0f40d0999b2a1fd74,subnet-0f2c25b80910a5034'
+
+#################
+#   Resources   #
+#################
+Resources:
+
+  CloudWatchLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '${FeatureName}-${MicroServiceName}'
+      RetentionInDays: 7
+
+  EcsCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Sub '${EcsClusterName}'
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 1
+
+  TaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      ContainerDefinitions:
+        - Name: !Sub '${ContainerName}'
+          Image: '514550159754.dkr.ecr.us-east-1.amazonaws.com/tccapi:latest'
+          PortMappings:
+            - ContainerPort: !Ref ListenerContainerPort
+              HostPort: !Ref ListenerContainerPort
+          Cpu: !Ref ContainerCpu
+          Memory: !Ref ContainerMemory
+          MemoryReservation: !Ref ContainerMemoryReservation
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Sub '${AWS::Region}'
+              awslogs-group: !Sub '${FeatureName}-${MicroServiceName}'
+              awslogs-stream-prefix: !Sub '${FeatureName}-${MicroServiceName}'
+      Family: !Sub 'family-${FeatureName}-${MicroServiceName}'
+      NetworkMode: awsvpc
+      Memory: !Ref ContainerMmoryReservation
+      Cpu: !Ref ContainerCpu
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !Ref TaskExecutionRole
+      RequiresCompatibilities:
+        - FARGATE
+    DependsOn: CloudWatchLogGroup
+
+  TaskExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${FeatureName}-${MicroServiceName}-AmazonECSTaskExecutionRolePolicy'
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:DescribeLogStreams'
+                Resource: '*'
+        - PolicyName: !Sub '${FeatureName}-${MicroServiceName}-ECS'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecs:DiscoverPollEndpoint'
+                  - 'ecs:RegisterContainerInstance'
+                  - 'ecs:SubmitContainerStateChange'
+                  - 'ecs:SubmitTaskStateChange'
+                  - 'ecs:ListContainerInstances'
+                  - 'ecs:Poll'
+                  - 'ecs:StartTelemetrySession'
+                  - 'ecs:UpdateContainerInstancesState'
+                  - 'ecs:ListTasks'
+                  - 'ecs:DescribeContainerInstances'
+                Resource: '*'
+        - PolicyName: !Sub '${FeatureName}-${MicroServiceName}-passrole'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource: !Sub >-
+                  arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:container-instance/*
+        - PolicyName: !Sub '${FeatureName}-${MicroServiceName}-passrole-2'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource: !Sub >-
+                  arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}
+        - PolicyName: !Sub '${FeatureName}-${MicroServiceName}-cloudwatch'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:PutMetricData'
+                Resource: '*'
+
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: !Sub '${AWS::StackName}'
+      GroupDescription: nlb-tcc-api
+      VpcId: !Ref VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          Description: Conexao com o NLB - TCP
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: '-1'
+          Description: Conexao para todas as portas
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: '-1'
+          Description: Conexao para todas as portas Ipv6
+          CidrIpv6: "::/0"
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          Description: Saida para todas as portas
+          IpProtocol: '-1'
+        - CidrIpv6: "::/0"
+          Description: Saida para todas as portas - Ipv6
+          IpProtocol: '-1'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}'
+
+  # =================== Load Balancer ===================
+  TargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: !Sub '${MicroServiceName}-TargetGroup'
+      Port: !Ref ListenerContainerPort
+      Protocol: TCP
+      VpcId: !Ref VPCID
+      TargetType: ip
+      HealthCheckProtocol: TCP
+      #     HealthCheckIntervalSeconds: 30
+      #     HealthCheckPath: '/actuator/health'
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub 'nlb-${MicroServiceName}'
+      Type: network
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: 'load_balancing.cross_zone.enabled'
+          Value: 'true'
+      Subnets: !Ref PrivateSubnets
+      Tags:
+        - Key: LoadBalancerType
+          Value: VPCLink
+
+  TccVpcLink:
+    Type: AWS::ApiGateway::VpcLink
+    Properties:
+      Description: "VpcLink Tcc"
+      Name: !Sub "${MicroServiceName}-vpc-link"
+      TargetArns:
+        - !Ref LoadBalancer
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: LoadBalancer
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref ListenerContainerPort
+      Protocol: TCP
+  # =================== End Load Balancer ===================
+
+  Service:
+    Type: "AWS::ECS::Service"
+    Properties:
+      ServiceName: !Sub service-${FeatureName}-${MicroServiceName}
+      Cluster: !Ref EcsClusterName
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      DesiredCount: 2
+      HealthCheckGracePeriodSeconds: 40
+      # LaunchType: FARGATE
+      CapacityProviderStrategy:
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 5
+        - CapacityProvider: FARGATE
+          Weight: 1
+      PlatformVersion: '1.4.0'
+      LoadBalancers:
+        - ContainerName: !Sub ${ContainerName}
+          ContainerPort: !Ref ListenerContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      SchedulingStrategy: REPLICA
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref SecurityGroup
+          Subnets: !Ref PrivateSubnets
+    DependsOn:
+      - Listener
+      - EcsCluster
+      - TaskDefinition
+      - TccVpcLink
+
+  # This is an IAM role which authorizes ECS to manage resources on your
+  # account on your behalf, such as updating your load balancer with the
+  # details of where your containers are, so that traffic can reach your
+  # containers.
+  ECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  # Rules which allow ECS to attach network interfaces to instances
+                  # on your behalf in order for awsvpc networking mode to work right
+                  - 'ec2:AttachNetworkInterface'
+                  - 'ec2:CreateNetworkInterface'
+                  - 'ec2:CreateNetworkInterfacePermission'
+                  - 'ec2:DeleteNetworkInterface'
+                  - 'ec2:DeleteNetworkInterfacePermission'
+                  - 'ec2:Describe*'
+                  - 'ec2:DetachNetworkInterface'
+
+                  # Rules which allow ECS to update load balancers on your behalf
+                  # with the information sabout how to send traffic to your containers
+                  - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+                  - 'elasticloadbalancing:DeregisterTargets'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
+                  - 'elasticloadbalancing:RegisterTargets'
+                Resource: '*'
+
+  # =================== Auto Scaling ===================
+  AutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${FeatureName}-auto-scaling-role"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ application-autoscaling.amazonaws.com ]
+            Action: [ "sts:AssumeRole" ]
+      Policies:
+        - PolicyName: !Sub "${FeatureName}-auto-scaling-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:DeleteAlarms
+                Resource:
+                  - "*"
+
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: Service
+    Properties:
+      MinCapacity: 2
+      MaxCapacity: 6
+      ResourceId: !Join
+        - "/"
+        - - service
+          - !Ref EcsClusterName
+          - !GetAtt Service.Name
+      RoleARN: !GetAtt AutoScalingRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      ScheduledActions:
+        - ScalableTargetAction:
+            MinCapacity: 0
+            MaxCapacity: 0
+          Schedule: 'cron(0 0 22 ? * MON-FRI)'
+          ScheduledActionName: scale-down
+        - ScalableTargetAction:
+            MinCapacity: 2
+            MaxCapacity: 6
+          Schedule: 'cron(0 0 11 ? * MON-FRI)'
+          ScheduledActionName: scale-up
+
+  # =================== Auto Scaling CPU ===================
+  # ScalingPolicy:
+  #   Type: AWS::ApplicationAutoScaling::ScalingPolicy
+  #   Properties:
+  #     PolicyName: !Sub "${FeatureName}-auto-scaling-policy"
+  #     PolicyType: TargetTrackingScaling
+  #     ScalingTargetId: !Ref ScalableTarget
+  #     TargetTrackingScalingPolicyConfiguration:
+  #       PredefinedMetricSpecification:
+  #         PredefinedMetricType: ECSServiceAverageCPUUtilization
+  #       TargetValue: 30.0
+
+  # =================== Auto Scaling Number of Requests ===================
+  ScalingPolicyTCPUp:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: ScaleWithFlowCountTCPStepPolicyUp
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: +1
+
+  ScalingPolicyTCPDown:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: ScaleWithFlowCountTCPStepPolicyDown
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalUpperBound: 0
+            ScalingAdjustment: -1
+
+  # Use Active flow count to scale up
+  HighTpsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub '${MicroServiceName} - High volume of requests'
+      EvaluationPeriods: 1
+      Threshold: 100
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Period: 60
+      Statistic: Sum
+      MetricName: ActiveFlowCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+      Namespace: AWS/NetworkELB
+      AlarmActions:
+        - !Ref ScalingPolicyTCPUp
+
+  # Use Active flow count to scale down
+  LowTpsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub '${MicroServiceName} - Low volume of requests'
+      EvaluationPeriods: 1
+      Threshold: 90
+      ComparisonOperator: LessThanOrEqualToThreshold
+      Period: 60
+      Statistic: Sum
+      MetricName: ActiveFlowCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+      Namespace: AWS/NetworkELB
+      AlarmActions:
+        - !Ref ScalingPolicyTCPDown
+
+#################
+#   Output   #
+#################
+Outputs:
+  ECSRole:
+    Description: The ARN of the ECS role
+    Value: !GetAtt 'ECSRole.Arn'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'ECSRole' ] ]
